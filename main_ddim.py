@@ -12,6 +12,7 @@ import time as t
 import pandas as pd
 
 # import torch.utils.tensorboard as tb
+sys.path.append("/content/genaiproject/src/generation/ddim")
 from runners.diffusion import Diffusion
 
 # SEED
