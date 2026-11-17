@@ -43,7 +43,7 @@ def load_tcga(test:bool=False):
         path = f"/home/alacan/data_RNAseq_RTCGA/test_df_covariates.csv"
     else:
         path = f"/home/alacan/data_RNAseq_RTCGA/train_df_covariates.csv"
-    df_tcga = pd.read_csv(path, ',')
+    df_tcga = pd.read_csv(path, sep=',')
     return df_tcga
 
 def load_gtex(test:bool=False):
@@ -58,7 +58,7 @@ def load_gtex(test:bool=False):
         path = f"/home/alacan/GTEx_data/df_test_gtex_L974.csv"
     else:
         path = f"/home/alacan/GTEx_data/df_train_gtex_L974.csv"
-    df = pd.read_csv(path, ',')
+    df = pd.read_csv(path, sep=',')
     return df
 
 def clean_data(df, keep_cols = ['cancer']):
