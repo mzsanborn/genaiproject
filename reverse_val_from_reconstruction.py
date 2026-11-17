@@ -11,8 +11,6 @@ import torch.utils.data as data_utils
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-genaiproject/src/classification/large_dim
-/utils.py
 
 from src.classification.large_dim.utils import build_loaders, get_datasets_for_search, split_and_scale_datasets, get_tcga_datasets, get_gtex_datasets
 # Import classifier config and hyperparameters
