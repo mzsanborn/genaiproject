@@ -30,6 +30,7 @@ pat = (clin.drop_duplicates("patient").set_index("patient")[[STUDY, AGE, GENDER]
            .set_axis(["cohort", "age", "gender"], axis=1))
 
 # --- sample-level metadata
+assert expr.index.str.match(r"^TCGA-[A-Z0-9]{2}-[A-Z0-9]{4}-\d{2}").all()
 code = expr.index.str[13:15].astype(int)
 meta = pd.DataFrame({"full_barcode": expr.index, "patient": expr.index.str[:12],
                      "cancer": (code < 10).astype(int)})
@@ -55,8 +56,40 @@ print(len(df), "samples")                            # paper: 9749 (won't match 
 print(df["tissue_type"].nunique(), "tissues")        # expect 24
 print(df["cancer"].value_counts())
 
+
+# --- verification block
+gene_cols = X.columns.astype(str).tolist()
+
+assert len(df) == len(X)
+assert df.columns.is_unique
+assert gene_cols == list(map(str, gene_ids))
+assert df[gene_cols].shape[1] == len(gene_ids)
+
+assert df[gene_cols].apply(lambda c: pd.api.types.is_numeric_dtype(c)).all()
+assert np.isfinite(df[gene_cols].to_numpy()).all()
+assert not df[gene_cols].isna().any().any()
+
+assert set(df["cancer"].unique()) <= {0, 1}
+assert set(df["gender"].unique()) <= {0.0, 1.0}
+assert df["age"].between(0, 120).all()
+assert df["tissue_type"].notna().all()
+assert df["cohort"].isin(COHORTS).all()
+
+print("Samples:", len(df))
+print("Genes:", len(gene_cols))
+print("Tissues:", df["tissue_type"].nunique())
+print("Cohorts:", df["cohort"].nunique())
+print(df["cancer"].value_counts(normalize=True))
+print(df["tissue_type"].value_counts().sort_index())
+
 # --- split: ~1/6 test; the loader then splits train 80/20 into train/val
 train, test = train_test_split(df, test_size=1/6, random_state=42, stratify=df["tissue_type"])
 np.save(f"{OUT}/TCGA_rnaseq_RSEM_gene_ids_full.npy", np.array(gene_ids))
 train.to_csv(f"{OUT}/train_df_covariates.csv", index=False, float_format="%.6g")
 test.to_csv(f"{OUT}/test_df_covariates.csv",  index=False, float_format="%.6g")
+
+# --- verification block
+assert list(train.columns) == list(test.columns)
+assert set(train["full_barcode"]).isdisjoint(test["full_barcode"])
+assert set(train["reduced_barcode"]).isdisjoint(test["reduced_barcode"])
+assert train["tissue_type"].nunique() == test["tissue_type"].nunique()
