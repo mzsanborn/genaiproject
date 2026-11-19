@@ -40,9 +40,9 @@ def load_tcga(test:bool=False):
     """
     # HARDCODED
     if test:
-        path = f"/home/alacan/data_RNAseq_RTCGA/test_df_covariates.csv"
+        path = f"newdata/data_RNAseq_RTCGA/train_df_covariates.csv"
     else:
-        path = f"/home/alacan/data_RNAseq_RTCGA/train_df_covariates.csv"
+        path = f"newdata/data_RNAseq_RTCGA/test_df_covariates.csv"
     df_tcga = pd.read_csv(path, sep=',')
     return df_tcga
 
