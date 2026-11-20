@@ -121,8 +121,35 @@ def parse_args_and_config():
         help="eta used to control the variances of sigma",
     )
     parser.add_argument("--sequence", action="store_true")
+    parser.add_argument("--backup", type=str, default="",
+                        help="Off-machine backup location (Drive folder under My Drive for "
+                             "--backup_backend drive, or a directory for local). Empty = no backup.")
+    parser.add_argument("--backup_backend", type=str, default="drive", choices=["drive", "local"])
+    parser.add_argument("--backup_every_min", type=float, default=20.0,
+                        help="Upload the latest checkpoint at most this often (minutes).")
     args = parser.parse_args()
     args.log_path = os.path.join(args.exp, "logs", args.doc)
+
+    # Off-machine backup (see src/generation/ddim/remote_backup.py)
+    args.backup_mgr = None
+    if args.backup:
+        from src.generation.ddim.remote_backup import Backup, make_backend
+        args.backup_mgr = Backup(make_backend(args.backup_backend, args.backup), args.exp,
+                                 every_min=args.backup_every_min)
+        args.backup_mgr.check()  # fail now, not hours into training
+        print(f"[backup] OK: {args.backup_mgr.describe()} (every {args.backup_every_min:g} min)")
+
+    # Resume: on a fresh machine, pull the checkpoint back from the backup first.
+    if args.resume_training:
+        ckpt = os.path.join(args.log_path, "ckpt.pth")
+        if not os.path.exists(ckpt) and args.backup_mgr is not None:
+            print("[backup] no local checkpoint; restoring from backup ...")
+            args.backup_mgr.restore(args.log_path)
+        if os.path.exists(ckpt):
+            print(f"Resuming from {ckpt}")
+        else:
+            print("No checkpoint found locally or in the backup: starting from scratch")
+            args.resume_training = False
 
     # parse config file
     with open(os.path.join("configs", args.config), "r") as f:
@@ -381,6 +408,12 @@ def main():
     else:
         df = df_temp
     df.to_csv(PATH_RESULTS_DATAFRAME, sep =',', header=True, index=False)
+
+    # Upload samples, metrics and logs (checkpoints were uploaded after training)
+    if ARGS.backup_mgr is not None:
+        ARGS.backup_mgr.sync_tree(ARGS.exp, label="results")
+        ARGS.backup_mgr.backend.upload(PATH_RESULTS_DATAFRAME, "results_ddim.csv")
+        print(f"[backup] results uploaded to {ARGS.backup_mgr.describe()}")
 
 #This will call the function main() and when main finishes, it will exit giving the system the return code that is the result of main()
 #If you execute a Python script directly, __name__ is set to "__main__", but if you import it from another script, it is not.

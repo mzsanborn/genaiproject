@@ -109,23 +109,15 @@ def append_csv_row(path, row):
 
 def save_atomic(obj, path):
     """
-    Save a checkpoint so that a failed write is retried and does not lose the object.
-
-    The object is first serialised to the machine's local temp dir, then copied onto
-    `path` with an ordinary write. We deliberately do NOT rename a temp file over
-    `path`: on Colab's Google Drive mount, files replaced by a rename were never
-    uploaded to Drive (checkpoints existed only in the Colab VM's cache).
+    Write a checkpoint to (local) disk via a temp file + rename, so an interrupted
+    write never corrupts the last good checkpoint. Off-machine copies are made
+    separately by remote_backup.Backup, never by writing into a mounted cloud folder.
     """
-    import shutil, tempfile
-    local = os.path.join(tempfile.gettempdir(), "ddim_ckpt_" + os.path.basename(path))
-    torch.save(obj, local)  # local disk: fast and reliable
-    try:
-        retry_io(lambda: shutil.copyfile(local, path), f"save {os.path.basename(path)}")
-    finally:
-        try:
-            os.remove(local)
-        except OSError:
-            pass
+    def _save():
+        tmp = path + ".tmp"
+        torch.save(obj, tmp)
+        os.replace(tmp, path)
+    retry_io(_save, f"save {os.path.basename(path)}")
 
 
 def is_cfg(config):
@@ -257,11 +249,21 @@ class Diffusion(object):
             # LR scheduler + AMP scaler state (saved separately so ckpt.pth keeps
             # the original [model, opt, epoch, step, ema] layout)
             extra_path = os.path.join(self.args.log_path, "ckpt_extra.pth")
-            if os.path.exists(extra_path):
-                extra = torch.load(extra_path, map_location=self.device)
+            extra = torch.load(extra_path, map_location=self.device) if os.path.exists(extra_path) else None
+            if extra is not None and extra.get("step", step) == step:
                 scaler.load_state_dict(extra["grad_scaler"])
                 if self.config.optim.use_scheduler and extra.get("lr_scheduler") is not None:
                     lr_scheduler.load_state_dict(extra["lr_scheduler"])
+            elif self.config.optim.use_scheduler:
+                # ckpt_extra missing or from a different step (e.g. a backup interrupted
+                # between the two files): rebuild the LR schedule by fast-forwarding it.
+                logging.warning(f"ckpt_extra.pth missing or not from step {step}; "
+                                f"fast-forwarding LR scheduler {step} steps")
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    for _ in range(step):
+                        lr_scheduler.step()
             logging.info(f"Resumed from epoch {start_epoch}, step {step}")
         else:
             # delete loss csv
@@ -413,15 +415,23 @@ class Diffusion(object):
                     states.append(ema_helper.state_dict())
 
                 save_atomic(states, os.path.join(self.args.log_path, "ckpt.pth"))
-                save_atomic({"grad_scaler": scaler.state_dict(),
+                save_atomic({"step": step, "grad_scaler": scaler.state_dict(),
                              "lr_scheduler": lr_scheduler.state_dict() if self.config.optim.use_scheduler else None},
                             os.path.join(self.args.log_path, "ckpt_extra.pth"))
                 last_saved_step = step
                 print(f"Saved checkpoint after epoch {epoch}, step {step} at {self.args.log_path}/ckpt.pth")
+                backup = getattr(self.args, "backup_mgr", None)
+                if backup is not None:
+                    backup.maybe_backup(self.args.log_path, step)
 
             # Compute metrics
             if epoch % self.config.training.metrics_step == 0 and epoch>0:
                 self.checkpoints_metrics(epoch, train_loader)
+
+        # make sure the final checkpoint is off the machine before sampling starts
+        backup = getattr(self.args, "backup_mgr", None)
+        if backup is not None:
+            backup.flush(self.args.log_path)
 
     def checkpoints_metrics(self, epoch, train_loader):
         """ 
