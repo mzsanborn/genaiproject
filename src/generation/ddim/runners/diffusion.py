@@ -74,6 +74,38 @@ def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_time
     return betas
 
 
+def retry_io(fn, what, tries=6, wait=5.0):
+    """
+    Run a file operation, retrying on OSError. Colab's Google Drive mount
+    occasionally fails a single open/write (e.g. FileNotFoundError on a file
+    that exists); one such hiccup used to kill a multi-hour training run.
+    Gives up with a warning (does not raise) after `tries` attempts.
+    """
+    for i in range(tries):
+        try:
+            return fn()
+        except OSError as e:
+            logging.warning(f"{what} failed ({e!r}); attempt {i + 1}/{tries}")
+            time.sleep(wait * (i + 1))
+    logging.error(f"{what} failed {tries} times; continuing without it")
+
+
+def append_csv_row(path, row):
+    def _write():
+        with open(path, "a") as f:
+            csv.writer(f).writerow(row)
+    retry_io(_write, f"append to {os.path.basename(path)}")
+
+
+def save_atomic(obj, path):
+    """torch.save to a temp file, then rename, so a failed write never corrupts the last good checkpoint."""
+    def _save():
+        tmp = path + ".tmp"
+        torch.save(obj, tmp)
+        os.replace(tmp, path)
+    retry_io(_save, f"save {os.path.basename(path)}")
+
+
 def is_cfg(config):
     return config.model.model == "ddim_cfg"
 
@@ -328,11 +360,8 @@ class Diffusion(object):
                     csv_info.append("%.10f" % optimizer.param_groups[0]['lr'])
 
 
-                    # save csv
-                    with open(os.path.join(self.args.log_path, "loss.csv"), "a") as f:
-                        w = csv.writer(f)
-                        w.writerow(csv_info)
-                        f.close()
+                    # save csv (retries on Drive hiccups instead of crashing)
+                    append_csv_row(os.path.join(self.args.log_path, "loss.csv"), csv_info)
 
                 if self.config.model.ema:
                     ema_helper.update(self.model)
@@ -361,10 +390,10 @@ class Diffusion(object):
                 if self.config.model.ema:
                     states.append(ema_helper.state_dict())
 
-                torch.save(states, os.path.join(self.args.log_path, "ckpt.pth"))
-                torch.save({"grad_scaler": scaler.state_dict(),
-                            "lr_scheduler": lr_scheduler.state_dict() if self.config.optim.use_scheduler else None},
-                           os.path.join(self.args.log_path, "ckpt_extra.pth"))
+                save_atomic(states, os.path.join(self.args.log_path, "ckpt.pth"))
+                save_atomic({"grad_scaler": scaler.state_dict(),
+                             "lr_scheduler": lr_scheduler.state_dict() if self.config.optim.use_scheduler else None},
+                            os.path.join(self.args.log_path, "ckpt_extra.pth"))
                 last_saved_step = step
                 print(f"Saved checkpoint after epoch {epoch}, step {step} at {self.args.log_path}/ckpt.pth")
 
