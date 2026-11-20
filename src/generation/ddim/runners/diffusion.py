@@ -84,8 +84,8 @@ def retry_io(fn, what, waits=RETRY_WAITS):
     occasionally fails a single open/write (e.g. FileNotFoundError on a file
     that exists); one such hiccup used to kill a multi-hour training run.
     Tries once, then once after each wait in `waits`. If every attempt fails
-    the last error is raised and the run stops (re-running resumes from the
-    last good checkpoint).
+    it logs an error and returns None, so training continues (that log row or
+    checkpoint is skipped; the next one will be attempted as normal).
     """
     tries = len(waits) + 1
     for i in range(tries):
@@ -93,8 +93,8 @@ def retry_io(fn, what, waits=RETRY_WAITS):
             return fn()
         except OSError as e:
             if i == tries - 1:
-                logging.error(f"{what} failed {tries} times; giving up")
-                raise
+                logging.error(f"{what} failed {tries} times ({e!r}); skipping it and continuing training")
+                return None
             logging.warning(f"{what} failed ({e!r}); attempt {i + 1}/{tries}, "
                             f"retrying in {waits[i]}s")
             time.sleep(waits[i])
