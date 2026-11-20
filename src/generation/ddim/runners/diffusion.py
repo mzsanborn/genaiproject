@@ -120,6 +120,49 @@ def save_atomic(obj, path):
     retry_io(_save, f"save {os.path.basename(path)}")
 
 
+class ValLossTracker:
+    """
+    Validation loss with FIXED noise and timesteps (drawn once, seeded), so values
+    are comparable across training. Evaluated with the EMA weights (what sampling
+    uses), in eval mode, with the conditioning given (no CFG dropout).
+    """
+    def __init__(self, val_dataset, num_timesteps, device, draws=8, seed=1234):
+        X, y = val_dataset.tensors
+        g = torch.Generator().manual_seed(seed)
+        n = len(X)
+        self.X, self.y, self.device = X.float(), y, device
+        self.t = torch.randint(0, num_timesteps, (draws, n), generator=g)
+        self.e = torch.randn((draws,) + tuple(X.shape), generator=g)
+
+    @torch.no_grad()
+    def __call__(self, model, betas, ema_helper=None, bs=2048):
+        net = model.module if isinstance(model, torch.nn.DataParallel) else model
+        saved = None
+        if ema_helper is not None:  # swap EMA weights in, restore afterwards
+            saved = {k: v.detach().clone() for k, v in net.state_dict().items()}
+            ema_helper.ema(net)
+        was_training = net.training
+        net.eval()
+        a_bar = (1 - betas).cumprod(dim=0)
+        total, count = 0.0, 0
+        for d in range(self.t.shape[0]):
+            for i in range(0, len(self.X), bs):
+                x0 = self.X[i:i + bs].to(self.device)
+                y = self.y[i:i + bs].to(self.device)
+                t = self.t[d, i:i + bs].to(self.device)
+                e = self.e[d, i:i + bs].to(self.device)
+                a = a_bar.index_select(0, t).view(-1, 1)
+                xt = x0 * a.sqrt() + e * (1.0 - a).sqrt()
+                with autocast():
+                    out = net(xt, t.float(), y)
+                total += (e - out.float()).square().sum(dim=1).sum().item()
+                count += len(x0)
+        if saved is not None:
+            net.load_state_dict(saved)
+        net.train(was_training)
+        return total / count
+
+
 def is_cfg(config):
     return config.model.model == "ddim_cfg"
 
@@ -236,6 +279,14 @@ class Diffusion(object):
 
         start_epoch, step = 0, 0
 
+        # --Validation loss + best checkpoint--
+        val_every = getattr(self.config.training, "val_every_steps", 1000)
+        val_tracker = ValLossTracker(test_dataset, self.num_timesteps, self.device,
+                                     draws=getattr(self.config.training, "val_draws", 8)) \
+            if (test_dataset is not None and val_every) else None
+        best_val, best_step, last_val_step = float("inf"), -1, 0
+        val_csv = os.path.join(self.args.log_path, "val_loss.csv")
+
         if self.args.resume_training:
             states = torch.load(os.path.join(self.args.log_path, "ckpt.pth"))
             self.model.load_state_dict(states[0])
@@ -264,8 +315,14 @@ class Diffusion(object):
                     warnings.simplefilter("ignore")
                     for _ in range(step):
                         lr_scheduler.step()
-            logging.info(f"Resumed from epoch {start_epoch}, step {step}")
+            if extra is not None and "best_val" in extra:
+                best_val, best_step = extra["best_val"], extra["best_step"]
+            last_val_step = step
+            logging.info(f"Resumed from epoch {start_epoch}, step {step}"
+                         + (f" (best val loss {best_val:.3f} at step {best_step})" if best_step >= 0 else ""))
         else:
+            if os.path.exists(val_csv):
+                os.remove(val_csv)
             # delete loss csv
             if os.path.exists(os.path.join(self.args.log_path, "loss.csv")):
                 os.remove(os.path.join(self.args.log_path, "loss.csv"))
@@ -400,6 +457,24 @@ class Diffusion(object):
                 elif self.config.optim.use_scheduler:
                     lr_scheduler.step()
 
+            # Validation loss (end of epoch, every `val_every` steps) -> best checkpoint
+            if val_tracker is not None and (step - last_val_step >= val_every
+                                            or epoch >= self.config.training.n_epochs - 1):
+                last_val_step = step
+                vl = val_tracker(self.model, self.betas, ema_helper)
+                improved = vl < best_val
+                if improved:
+                    best_val, best_step = vl, step
+                    best_states = [self.model.state_dict(), None, epoch + 1, step]
+                    if self.config.model.ema:
+                        best_states.append(ema_helper.state_dict())
+                    save_atomic(best_states, os.path.join(self.args.log_path, "ckpt_best.pth"))
+                new_file = not os.path.exists(val_csv)
+                append_csv_row(val_csv, ["epoch", "step", "val_loss", "best_val", "best_step"]) if new_file else None
+                append_csv_row(val_csv, [epoch, step, f"{vl:.4f}", f"{best_val:.4f}", best_step])
+                logging.info(f"val loss {vl:.3f} at step {step}" + ("  [new best]" if improved
+                             else f"  (best {best_val:.3f} at step {best_step})"))
+
             # Checkpoint at the END of an epoch (after the LR scheduler has stepped), at most
             # every `snapshot_freq` steps, and always after the final epoch. Storing
             # `epoch + 1` means a resumed run continues exactly where this one stopped,
@@ -415,7 +490,8 @@ class Diffusion(object):
                     states.append(ema_helper.state_dict())
 
                 save_atomic(states, os.path.join(self.args.log_path, "ckpt.pth"))
-                save_atomic({"step": step, "grad_scaler": scaler.state_dict(),
+                save_atomic({"step": step, "best_val": best_val, "best_step": best_step,
+                             "grad_scaler": scaler.state_dict(),
                              "lr_scheduler": lr_scheduler.state_dict() if self.config.optim.use_scheduler else None},
                             os.path.join(self.args.log_path, "ckpt_extra.pth"))
                 last_saved_step = step
@@ -579,7 +655,13 @@ class Diffusion(object):
 
         # loading last checkpoints if no pretraining
         if not self.args.use_pretrained:
-            if getattr(self.config.sampling, "ckpt_id", None) is None:
+            best_path = os.path.join(self.args.log_path, "ckpt_best.pth")
+            if getattr(self.config.sampling, "ckpt_id", None) is None and \
+                    getattr(self.config.sampling, "use_best", True) and os.path.exists(best_path):
+                states = torch.load(best_path, map_location=self.device)
+                print(f"Loaded BEST-validation checkpoint ckpt_best.pth (step {states[3]})")
+                logging.info(f"Sampling from best-validation checkpoint (step {states[3]})")
+            elif getattr(self.config.sampling, "ckpt_id", None) is None:
                 states = torch.load(os.path.join(self.args.log_path, "ckpt.pth"),
                                     map_location=self.device)
                 print("Loaded checkpoint ckpt.pth")

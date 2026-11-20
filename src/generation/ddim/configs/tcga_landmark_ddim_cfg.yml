@@ -59,11 +59,14 @@ training:
     snapshot_freq: 2000 # saving of weights (steps); frequent so Colab disconnects lose little
     validation_freq: 2000 # never used in our case
     metrics_step: 30000 # intervals to compute metrics during training
+    val_every_steps: 1000 # validation loss (val split, fixed noise, EMA weights) every N steps; best -> ckpt_best.pth
+    val_draws: 8 # noise/timestep draws per validation sample
 
 sampling:
     batch_size: 2048 
     total_samples: 8200
     compute_metrics: True
+    use_best: True # sample from ckpt_best.pth (lowest validation loss) instead of the last checkpoint
 
 optim:
     weight_decay: 0.000

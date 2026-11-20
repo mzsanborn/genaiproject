@@ -155,7 +155,7 @@ class Backup:
       sync_tree()     blocking upload of result files (samples, metrics, logs).
       restore()       download checkpoint files into a fresh machine before resuming.
     """
-    CKPT_FILES = ("ckpt.pth", "ckpt_extra.pth", "loss.csv", "config.yml")
+    CKPT_FILES = ("ckpt.pth", "ckpt_extra.pth", "ckpt_best.pth", "val_loss.csv", "loss.csv", "config.yml")
 
     def __init__(self, backend, exp_dir, every_min=20.0):
         self.backend = backend
@@ -232,7 +232,7 @@ class Backup:
         self.wait()
         return self._upload_all(self._ckpt_pairs(log_path, snapshot=False), label)
 
-    def sync_tree(self, root, label="results", skip=("ckpt.pth", "ckpt_extra.pth")):
+    def sync_tree(self, root, label="results", skip=("ckpt.pth", "ckpt_extra.pth", "ckpt_best.pth")):
         self.wait()
         pairs = []
         for d, dirs, files in os.walk(root):
