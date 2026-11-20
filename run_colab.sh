@@ -29,9 +29,10 @@ cd "$(dirname "$0")"
 
 WHICH=${1:-baseline}
 EXP_ROOT=${EXP_ROOT:-/content/runs}
-BACKUP_ROOT=${BACKUP_ROOT:-genaiproject_backups}   # folder under My Drive
+BACKUP_ROOT=${BACKUP_ROOT:-genaiproject_backups_standard}   # folder under My Drive (runs with per-gene standard scaling; earlier maxabs runs are in genaiproject_backups)
 BACKUP_BACKEND=${BACKUP_BACKEND:-drive}
 BACKUP_EVERY_MIN=${BACKUP_EVERY_MIN:-20}
+TIMESTEPS=${TIMESTEPS:-100}   # DDIM sampling steps (100 used for all reported runs)
 
 case "$WHICH" in
   baseline) CONFIG=tcga_landmark_ddim_baseline.yml ;;  # tissue-conditioned replication
@@ -46,8 +47,8 @@ if [ "${RESUME:-1}" = "0" ]; then
 fi
 
 # --with_best_params y : Lacan et al. tuned hyperparameters (4096x2 layers, quad schedule, lr 1.4e-3)
-# --timesteps 1000     : DDIM sampling steps (lower, e.g. 100, for quicker sampling)
+# --timesteps         : DDIM sampling steps (TIMESTEPS, default 100)
 python main_ddim.py --config "$CONFIG" --with_best_params y \
     --exp "$EXP_ROOT/$WHICH" --doc tcga --sample --fid \
-    --timesteps 1000 --eta 0 --ni --device "[0]" --device2 "cuda:0" $RESUME_FLAG \
+    --timesteps "$TIMESTEPS" --eta 0 --ni --device "[0]" --device2 "cuda:0" $RESUME_FLAG \
     --backup "$BACKUP_ROOT/$WHICH" --backup_backend "$BACKUP_BACKEND" --backup_every_min "$BACKUP_EVERY_MIN"

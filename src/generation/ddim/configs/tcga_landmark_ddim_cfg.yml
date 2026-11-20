@@ -6,7 +6,7 @@ data:
     landmark: True
     image_size: 978 # size of genes vector 
     num_classes: 0 # unused by ddim_cfg (covariate encoders replace the one-hot)
-    scaler_type: "maxabs" # standard/minmax/quantile/robust/none
+    scaler_type: "standard" # per-gene z-score (fit on train). Was "maxabs": real-data spread (0.09) tiny vs diffusion noise (1.0); only end-of-schedule checkpoints sampled well, with heavy memorisation. Options: standard/minmax/robust/maxabs
     n_quantiles: 1000
     logit_transform: false # None
     num_workers: 4 
