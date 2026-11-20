@@ -74,20 +74,30 @@ def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_time
     return betas
 
 
-def retry_io(fn, what, tries=6, wait=5.0):
+# Seconds to wait before each retry: 5 attempts spread over ~3.5 minutes.
+RETRY_WAITS = (10, 30, 60, 120)
+
+
+def retry_io(fn, what, waits=RETRY_WAITS):
     """
     Run a file operation, retrying on OSError. Colab's Google Drive mount
     occasionally fails a single open/write (e.g. FileNotFoundError on a file
     that exists); one such hiccup used to kill a multi-hour training run.
-    Gives up with a warning (does not raise) after `tries` attempts.
+    Tries once, then once after each wait in `waits`. If every attempt fails
+    the last error is raised and the run stops (re-running resumes from the
+    last good checkpoint).
     """
+    tries = len(waits) + 1
     for i in range(tries):
         try:
             return fn()
         except OSError as e:
-            logging.warning(f"{what} failed ({e!r}); attempt {i + 1}/{tries}")
-            time.sleep(wait * (i + 1))
-    logging.error(f"{what} failed {tries} times; continuing without it")
+            if i == tries - 1:
+                logging.error(f"{what} failed {tries} times; giving up")
+                raise
+            logging.warning(f"{what} failed ({e!r}); attempt {i + 1}/{tries}, "
+                            f"retrying in {waits[i]}s")
+            time.sleep(waits[i])
 
 
 def append_csv_row(path, row):
