@@ -1,0 +1,55 @@
+python processing.py
+(11069, 20531) ['100130426', '100133144', '100134869']
+725 unmapped symbols (kept under their symbol name)
+AGER present as its own column: True
+final gene count: 20531
+SLC35E2A/B in landmark list: set()
+final gene count: 20531
+['genes_ids'] (978, 1)
+landmarks found: 978 / 978 []
+['_PATIENT', 'cancer type abbreviation', 'age_at_initial_pathologic_diagnosis', 'gender', 'race', 'ajcc_pathologic_tumor_stage', 'clinical_stage', 'histological_type', 'histological_grade', 'initial_pathologic_dx_year', 'menopause_status', 'birth_days_to', 'vital_status', 'tumor_status', 'last_contact_days_to', 'death_days_to', 'cause_of_death', 'new_tumor_event_type', 'new_tumor_event_site', 'new_tumor_event_site_other', 'new_tumor_event_dx_days_to', 'treatment_outcome_first_course', 'margin_status', 'residual_tumor', 'OS', 'OS.time', 'DSS', 'DSS.time', 'DFI', 'DFI.time', 'PFI', 'PFI.time', 'Redaction']
+gender
+FEMALE    5624
+MALE      5348
+Name: count, dtype: int64
+10972 samples
+24 tissues
+cancer
+1    10253
+0      719
+Name: count, dtype: int64
+Samples: 10972
+Genes: 20531
+Tissues: 24
+Cohorts: 33
+cancer
+1    0.93447
+0    0.06553
+Name: proportion, dtype: float64
+tissue_type
+adrenal           79
+bladder          427
+blood            221
+brain            701
+breast          1214
+cervical         309
+colon            492
+esophagus        196
+eye               80
+head             565
+kidney          1204
+liver            468
+lung            1188
+ovary            309
+pancreas         183
+prostate         550
+rectum           170
+skin             465
+soft-tissues     265
+stomach          445
+testes           139
+thymus           121
+thyroid          572
+uterus           609
+Name: count, dtype: int64
+8777 2195
