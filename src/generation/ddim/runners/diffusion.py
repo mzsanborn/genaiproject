@@ -108,12 +108,24 @@ def append_csv_row(path, row):
 
 
 def save_atomic(obj, path):
-    """torch.save to a temp file, then rename, so a failed write never corrupts the last good checkpoint."""
-    def _save():
-        tmp = path + ".tmp"
-        torch.save(obj, tmp)
-        os.replace(tmp, path)
-    retry_io(_save, f"save {os.path.basename(path)}")
+    """
+    Save a checkpoint so that a failed write is retried and does not lose the object.
+
+    The object is first serialised to the machine's local temp dir, then copied onto
+    `path` with an ordinary write. We deliberately do NOT rename a temp file over
+    `path`: on Colab's Google Drive mount, files replaced by a rename were never
+    uploaded to Drive (checkpoints existed only in the Colab VM's cache).
+    """
+    import shutil, tempfile
+    local = os.path.join(tempfile.gettempdir(), "ddim_ckpt_" + os.path.basename(path))
+    torch.save(obj, local)  # local disk: fast and reliable
+    try:
+        retry_io(lambda: shutil.copyfile(local, path), f"save {os.path.basename(path)}")
+    finally:
+        try:
+            os.remove(local)
+        except OSError:
+            pass
 
 
 def is_cfg(config):
