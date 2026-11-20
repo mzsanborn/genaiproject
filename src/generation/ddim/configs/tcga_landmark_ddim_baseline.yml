@@ -1,5 +1,7 @@
 data:
-    dataset: "tcga_landmark" 
+    dataset: "tcga_landmark"
+    conditioning: "tissue" # baseline: one-hot tissue (original label scheme)
+    eval_split: "val" # held-out split loaded alongside train (val|test)
     dataset_frechet: "tcga"
     landmark: True
     image_size: 978 # size of genes vector 
@@ -43,14 +45,14 @@ training:
     batch_size: 2048 
     n_epochs: 15000 
     n_iters: 5000000 # never used
-    snapshot_freq: 50000 # saving of weights
+    snapshot_freq: 2000 # saving of weights (steps); frequent so Colab disconnects lose little
     validation_freq: 2000 # never used in our case
     metrics_step: 30000 # intervals to compute metrics during training
 
 sampling:
     batch_size: 2048 
     total_samples: 8200
-    compute_metrics: False
+    compute_metrics: True
 
 optim:
     weight_decay: 0.000

@@ -13,6 +13,8 @@ import torch
 import torch.utils.data as data
 
 from src.generation.ddim.models.diffusion_ddim import ModelDDIM
+from src.generation.ddim.models.diffusion_cfg import ModelDDIMCFG, CFGWrapper
+from src.generation.ddim.covariates import drop_conditions
 from src.generation.ddim.models.ema import EMAHelper
 from src.generation.ddim.functions import count_parameters, get_optimizer, get_scheduler, get_scheduler_warmup
 from src.generation.ddim.functions.losses import loss_registry
@@ -70,6 +72,27 @@ def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_time
         raise NotImplementedError(beta_schedule)
     assert betas.shape == (num_diffusion_timesteps,)
     return betas
+
+
+def is_cfg(config):
+    return config.model.model == "ddim_cfg"
+
+
+def build_model(config):
+    """'ddim' = baseline tissue-conditioned model, 'ddim_cfg' = covariate CFG model."""
+    if config.model.model == "ddim":
+        return ModelDDIM(config)
+    if config.model.model == "ddim_cfg":
+        return ModelDDIMCFG(config)
+    raise NotImplementedError(config.model.model)
+
+
+def guidance_weights(config):
+    """{covariate: weight} from config.cfg.guidance (None / missing = plain conditional)."""
+    g = getattr(getattr(config, "cfg", None), "guidance", None)
+    if g is None:
+        return {}
+    return dict(vars(g)) if not isinstance(g, dict) else dict(g)
 
 class Diffusion(object):
     def __init__(self, args, config, device=None):
@@ -129,7 +152,7 @@ class Diffusion(object):
         print(f"NUMBER OF BATCHES: {self.config.n_batchs}")
 
         #--Load Model--
-        self.model = ModelDDIM(config)
+        self.model = build_model(config)
 
         #--Nb Parameters
         self.nb_params = count_parameters(self.model)
@@ -173,10 +196,19 @@ class Diffusion(object):
 
             states[1]["param_groups"][0]["eps"] = self.config.optim.eps
             optimizer.load_state_dict(states[1])
-            start_epoch = states[2]
+            start_epoch = states[2]  # next epoch to run (saved as epoch + 1)
             step = states[3]
             if self.config.model.ema:
                 ema_helper.load_state_dict(states[4])
+            # LR scheduler + AMP scaler state (saved separately so ckpt.pth keeps
+            # the original [model, opt, epoch, step, ema] layout)
+            extra_path = os.path.join(self.args.log_path, "ckpt_extra.pth")
+            if os.path.exists(extra_path):
+                extra = torch.load(extra_path, map_location=self.device)
+                scaler.load_state_dict(extra["grad_scaler"])
+                if self.config.optim.use_scheduler and extra.get("lr_scheduler") is not None:
+                    lr_scheduler.load_state_dict(extra["lr_scheduler"])
+            logging.info(f"Resumed from epoch {start_epoch}, step {step}")
         else:
             # delete loss csv
             if os.path.exists(os.path.join(self.args.log_path, "loss.csv")):
@@ -197,6 +229,7 @@ class Diffusion(object):
                 f.close()
 
         epoch_tracker = -1
+        last_saved_step = step
 
         train_start_time = time.time()
         for epoch in range(start_epoch, self.config.training.n_epochs):
@@ -226,6 +259,10 @@ class Diffusion(object):
                 This helps to prevent the model from overfitting to specific parts of the input sequence.
                 '''
                 
+                # CFG: randomly replace covariates with their null token
+                if is_cfg(config):
+                    y = drop_conditions(y, p_each=config.cfg.p_drop_each, p_all=config.cfg.p_drop_all)
+
                 # Loss is computed under autocast env
                 loss, avg = loss_registry[config.model.type](self.model, x, t, e, b, y)
 
@@ -300,19 +337,6 @@ class Diffusion(object):
                 if self.config.model.ema:
                     ema_helper.update(self.model)
 
-                if step % self.config.training.snapshot_freq == 0 or epoch >= self.config.training.n_epochs - 1:
-                    states = [
-                        self.model.state_dict(),
-                        optimizer.state_dict(),
-                        epoch,
-                        step,
-                    ]
-                    if self.config.model.ema:
-                        states.append(ema_helper.state_dict())
-
-                    torch.save(states, os.path.join(self.args.log_path, "ckpt.pth"))
-                    print("Saved checkpoint at step {}".format(step) + "at path" + self.args.log_path + "ckpt_{}.pth".format(step))
-
                 data_start = time.time()
 
                 #pytorch_warmup https://github.com/Tony-Y/pytorch_warmup
@@ -322,6 +346,27 @@ class Diffusion(object):
                         print("Learning rate decayed to {}".format(optimizer.param_groups[0]["lr"]))
                 elif self.config.optim.use_scheduler:
                     lr_scheduler.step()
+
+            # Checkpoint at the END of an epoch (after the LR scheduler has stepped), at most
+            # every `snapshot_freq` steps, and always after the final epoch. Storing
+            # `epoch + 1` means a resumed run continues exactly where this one stopped,
+            # so the OneCycle schedule is never stepped past its end.
+            if step - last_saved_step >= self.config.training.snapshot_freq or epoch >= self.config.training.n_epochs - 1:
+                states = [
+                    self.model.state_dict(),
+                    optimizer.state_dict(),
+                    epoch + 1,
+                    step,
+                ]
+                if self.config.model.ema:
+                    states.append(ema_helper.state_dict())
+
+                torch.save(states, os.path.join(self.args.log_path, "ckpt.pth"))
+                torch.save({"grad_scaler": scaler.state_dict(),
+                            "lr_scheduler": lr_scheduler.state_dict() if self.config.optim.use_scheduler else None},
+                           os.path.join(self.args.log_path, "ckpt_extra.pth"))
+                last_saved_step = step
+                print(f"Saved checkpoint after epoch {epoch}, step {step} at {self.args.log_path}/ckpt.pth")
 
             # Compute metrics
             if epoch % self.config.training.metrics_step == 0 and epoch>0:
@@ -464,8 +509,8 @@ class Diffusion(object):
     def sample(self):
         
         if self.model is None:
-            if self.config.model.model == "ddim":
-                self.model = ModelDDIM(self.config)
+            if self.config.model.model in ("ddim", "ddim_cfg"):
+                self.model = build_model(self.config)
                 # To GPU
                 self.model = self.model.to(self.device)
 
@@ -745,7 +790,10 @@ class Diffusion(object):
     def sample_image(self, x, model, last=True, y=None):
         """
         Global function for generation.
+        For the CFG model, guidance weights come from config.cfg.guidance.
         """
+        if is_cfg(self.config):
+            model = CFGWrapper(model, guidance_weights(self.config))
         if self.args.sample_type == "generalized":
             # uniform skip
             if self.args.skip_type == "uniform":
@@ -784,7 +832,7 @@ class Diffusion(object):
             from src.generation.ddim.functions.denoising import ddpm_steps
 
             # DDPM STEPS
-            x = ddpm_steps(x, seq, model, self.betas)
+            x = ddpm_steps(x, seq, model, self.betas, y=y)
         else:
             raise NotImplementedError
 
@@ -803,8 +851,8 @@ class Diffusion(object):
         """
         # Load architecture
         if self.model is None:
-            if self.config.model.model == "ddim":
-                self.model = ModelDDIM(self.config)
+            if self.config.model.model in ("ddim", "ddim_cfg"):
+                self.model = build_model(self.config)
                 self.model = self.model.to(self.device) # To GPU
 
         start_time = time.time()
@@ -915,8 +963,8 @@ class Diffusion(object):
         """
         # Load architecture
         if self.model is None:
-            if self.config.model.model == "ddim":
-                self.model = ModelDDIM(self.config)
+            if self.config.model.model in ("ddim", "ddim_cfg"):
+                self.model = build_model(self.config)
                 self.model = self.model.to(self.device) # To GPU
 
         

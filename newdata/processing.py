@@ -5,13 +5,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # repo root
 import numpy as np, pandas as pd
 from sklearn.model_selection import train_test_split
 from data.utils_preprocessing import COHORTS, TISSUES, CANCER_TYPES   # repo mappings
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from split_utils import (select_primary_one_per_patient, load_patient_race, add_race,
+                         patient_split, check_patient_disjoint, summarize)
 
 
 BASE = Path(__file__).resolve().parent
-# XENA = BASE / "EB++AdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.xena.gz"
-# CLIN = BASE / "clinical.tsv"
-XENA = "/Users/goelaine314/Downloads/EB++AdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.xena.gz"
-CLIN = "/Users/goelaine314/Downloads/clinical.tsv"
+# usage: python newdata/processing.py [path/to/EB++AdjustPANCAN_...xena.gz]
+XENA = (sys.argv[1] if len(sys.argv) > 1
+        else "/Users/goelaine314/Downloads/EB++AdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.xena.gz")
+CLIN = BASE / "clinical.tsv"
 OUT = BASE / "data_RNAseq_RTCGA"
 OUT.mkdir(parents=True, exist_ok=True)          # wherever the repo's PATH points
 UNLOG = True                          # variant B: 2**x - 1 ; set False for variant A
@@ -172,6 +175,10 @@ meta, X = meta[~dup].reset_index(drop=True), X[~dup].reset_index(drop=True)
 df = pd.concat([meta[["full_barcode", "reduced_barcode", "tissue_type", "cancer_type",
                       "cohort", "cancer"]], X, meta[["barcode", "gender", "age"]]], axis=1)
 
+# --- primary tumors only (codes 01/03), one sample per patient, add race
+df = select_primary_one_per_patient(df).drop(columns="patient")
+df = add_race(df, load_patient_race(CLIN))
+
 print(len(df), "samples")                            # paper: 9749 (won't match exactly)
 print(df["tissue_type"].nunique(), "tissues")        # expect 24
 print(df["cancer"].value_counts())
@@ -202,21 +209,31 @@ print("Cohorts:", df["cohort"].nunique())
 print(df["cancer"].value_counts(normalize=True))
 print(df["tissue_type"].value_counts().sort_index())
 
-# --- split: ~1/6 test; the loader then splits train 80/20 into train/val
-# train, test = train_test_split(df, test_size=1/6, random_state=42, stratify=df["tissue_type"])
+# --- split by patient, 80/10/10 train/val/test, stratified by cohort (see split_utils.py)
+# (The old repo split shuffled *samples*, which put 260 patients in both train and test.)
+train, val, test = patient_split(df)
+for name, d in [("train", train), ("val", val), ("test", test)]:
+    summarize(name, d)
 
-from data.utils_preprocessing import train_test_split as repo_split
-np.random.seed(42)
-train, test = repo_split(df, split_ratios=[0.8, 0.2], shuffle=True)
-print(len(train), len(test))
 np.save(f"{OUT}/TCGA_rnaseq_RSEM_gene_ids_full.npy", np.array(gene_ids))
 train.to_csv(f"{OUT}/train_df_covariates.csv", index=False, float_format="%.6g")
+val.to_csv(f"{OUT}/val_df_covariates.csv", index=False, float_format="%.6g")
 test.to_csv(f"{OUT}/test_df_covariates.csv",  index=False, float_format="%.6g")
 
+# landmark-only copy (what the diffusion models train on)
+lm_cols = pd.read_csv(BASE.parent / "data" / "tcga_union_978landmark_genes.csv", dtype=str)["genes_ids"].tolist()
+meta_front = ["full_barcode", "reduced_barcode", "tissue_type", "cancer_type", "cohort", "cancer"]
+meta_back = ["barcode", "gender", "age", "race"]
+OUT_L978 = BASE / "data_RNAseq_RTCGA_L978"
+OUT_L978.mkdir(parents=True, exist_ok=True)
+for name, d in [("train", train), ("val", val), ("test", test)]:
+    d[meta_front + lm_cols + meta_back].to_csv(
+        OUT_L978 / f"{name}_df_covariates.csv", index=False, float_format="%.6g")
+
 # --- verification block
-assert list(train.columns) == list(test.columns)
-assert set(train["full_barcode"]).isdisjoint(test["full_barcode"])
-# assert set(train["reduced_barcode"]).isdisjoint(test["reduced_barcode"])
+assert list(train.columns) == list(val.columns) == list(test.columns)
+check_patient_disjoint(train, val, test)             # no patient in more than one split
+assert train["full_barcode"].str[:12].is_unique      # one sample per patient
 assert train["tissue_type"].nunique() == test["tissue_type"].nunique()
 
 

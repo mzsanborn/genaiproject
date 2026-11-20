@@ -12,10 +12,16 @@ import time as t
 import pandas as pd
 
 # import torch.utils.tensorboard as tb
-sys.path.append("/content/genaiproject/src/generation/ddim")
-from runners.diffusion import Diffusion
+# Paths relative to this file, so it runs from any clone (Colab, local, ...)
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+DDIM_DIR = os.path.join(REPO_ROOT, "src", "generation", "ddim")
+sys.path.insert(0, REPO_ROOT)
+from src.generation.ddim.runners.diffusion import Diffusion
 
-os.chdir("/content/genaiproject/src/generation/ddim")
+# configs/, results/ and the --exp folder are resolved relative to the ddim folder
+# (as in the original code). Pass an absolute --exp (e.g. on Google Drive) to keep
+# checkpoints across Colab sessions.
+os.chdir(DDIM_DIR)
 
 # SEED
 torch.manual_seed(42)
@@ -226,7 +232,8 @@ def parse_args_and_config():
     #device = [torch.device(args.device[i]) for i in args.device]
     list_devices = args.device.strip("[]").split(",")
     #device = [torch.device(int(list_devices[i])) for i in range(len(list_devices))]
-    device = [int(list_devices[i]) for i in range(len(list_devices))]
+    # "[0]" -> [0] (GPU ids); "cpu" -> ["cpu"] (for local smoke tests)
+    device = [int(d) if d.strip().isdigit() else d.strip() for d in list_devices]
     logging.info("Using device (s): {}".format(device))
     new_config.device = device
 
@@ -363,14 +370,16 @@ def main():
     d['noise_avg'] = df['avg'].values[-1].item()
     d['loss'] = df['loss'].values[-1].item()
 
-    # build csv
+    # build csv (nested values, e.g. CFG guidance weights, stored as strings)
+    d = {k: (str(v) if isinstance(v, dict) else v) for k, v in d.items()}
     df_temp = pd.DataFrame(data=d, index=[0])
 
-    # Load results dataframe
-    df = pd.read_csv(PATH_RESULTS_DATAFRAME, sep =',')
-    
-    # Merge dataframes
-    df = pd.concat([df, df_temp])
+    # Load results dataframe (create it on first run)
+    if os.path.exists(PATH_RESULTS_DATAFRAME):
+        df = pd.read_csv(PATH_RESULTS_DATAFRAME, sep =',')
+        df = pd.concat([df, df_temp])
+    else:
+        df = df_temp
     df.to_csv(PATH_RESULTS_DATAFRAME, sep =',', header=True, index=False)
 
 #This will call the function main() and when main finishes, it will exit giving the system the return code that is the result of main()

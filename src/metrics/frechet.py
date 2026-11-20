@@ -114,6 +114,24 @@ def calculate_fid(act1: np.array, act2: np.array):
     return fid
 
 
+def compute_frechet_distance_pca(real_data: np.array, fake_data: np.array,
+                                 n_components: int = 50, pca=None, scaler=None):
+    """
+    Frechet distance between real and fake data after standardising and projecting
+    onto the top principal components of the *real* data.
+    Pass a pre-fitted (scaler, pca) to compare several fake sets / subgroups in the
+    same space (e.g. fit on the real training data once).
+    """
+    from sklearn.decomposition import PCA
+    if scaler is None:
+        scaler = StandardScaler().fit(real_data)
+    real_s, fake_s = scaler.transform(real_data), scaler.transform(fake_data)
+    if pca is None:
+        pca = PCA(n_components=min(n_components, real_s.shape[0] - 1, real_s.shape[1]),
+                  random_state=0).fit(real_s)
+    return calculate_fid(pca.transform(real_s), pca.transform(fake_s))
+
+
 def compute_frechet_distance_score(
         real_data: np.array,
         fake_data: np.array,
@@ -140,7 +158,15 @@ def compute_frechet_distance_score(
     # Path where pretrained weights are stored    
     # path_model = f'/home/alacan/scripts/classification/landmarks/results/model_{dataset.lower()}.pth'
     # path_model = f'/home/alacan/scripts/gerec_pipeline/src/classification/results/model_{dataset.lower()}.pth'
-    path_model = f'/home/alacan/scripts/classification/landmarks/results/model_{dataset.lower()}.pth'
+    path_model = os.environ.get(
+        "FRECHET_CLASSIFIER_PATH",
+        f'/home/alacan/scripts/classification/landmarks/results/model_{dataset.lower()}.pth')
+
+    if not os.path.exists(path_model):
+        # The original authors' pretrained classifier weights are not in the repo.
+        # Fall back to the Frechet distance in a PCA space fitted on the real data.
+        print(f"[frechet] no pretrained classifier at {path_model}; using PCA-space Frechet distance")
+        return compute_frechet_distance_pca(real_data, fake_data)
 
     # Init pretrained model
     model = init_pretrained_classifier(config, dataset, path_model, device)

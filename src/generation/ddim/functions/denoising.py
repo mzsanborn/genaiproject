@@ -46,7 +46,7 @@ def generalized_steps(x, seq, model, b, y=None, **kwargs):
     return xs, x0_preds
 
 # DDPM with ETA > 1
-def ddpm_steps(x, seq, model, b, **kwargs):
+def ddpm_steps(x, seq, model, b, y=None, **kwargs):
     with torch.no_grad():
         n = x.size(0)
         seq_next = [-1] + list(seq[:-1])
@@ -64,7 +64,7 @@ def ddpm_steps(x, seq, model, b, **kwargs):
             # Runs the forward pass with autocasting.
             # Loss is computed under autocast env
             with autocast():
-                output = model(x, t)
+                output = model(x, t, y)
             
             e = output # predicted noise e_t
             x0_from_e = (1.0 / at).sqrt() * x - (1.0 / at - 1).sqrt() * e # predicting x_0

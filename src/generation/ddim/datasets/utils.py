@@ -15,6 +15,16 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler, Q
 from sklearn.model_selection import train_test_split
 import torch.utils.data as data_utils
 
+from src.generation.ddim.covariates import encode_covariates
+
+# Repo root = four levels up from src/generation/ddim/datasets/utils.py
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+TCGA_DIR = os.path.join(REPO_ROOT, "newdata", "data_RNAseq_RTCGA_L978")
+LANDMARK_FILE = os.path.join(REPO_ROOT, "data", "tcga_union_978landmark_genes.csv")
+
+TCGA_TISSUES = ['adrenal', 'bladder', 'breast', 'cervical', 'liver', 'colon', 'blood', 'esophagus', 'brain', 'head', 'kidney', 'kidney', 'kidney', 'blood', 'brain', 'liver', 'lung', 'lung', 'lung', 'ovary', 'pancreas', 'kidney', 'prostate','rectum', 'soft-tissues', 'skin', 'stomach', 'stomach', 'testes', 'thyroid', 'thymus', 'uterus', 'uterus', 'eye']
+
+
 def get_dataset(config):
     """
     Get dataset from config.
@@ -24,25 +34,28 @@ def get_dataset(config):
         tuple of train dataframe and test dataframe (csv)
     """
     if "TCGA" in config.data.dataset or "tcga" in config.data.dataset:
-        dataset, test_dataset = get_tcga_datasets(config)
+        dataset, test_dataset = get_tcga_datasets(config.data.scaler_type,
+                                                  conditioning=getattr(config.data, "conditioning", "tissue"),
+                                                  eval_split=getattr(config.data, "eval_split", "val"))
 
     elif "GTEX" in config.data.dataset or "gtex" in config.data.dataset:
-        dataset, test_dataset = get_gtex_datasets(config)
+        dataset, test_dataset = get_gtex_datasets(config.data.scaler_type)
 
     return dataset, test_dataset
 
-def load_tcga(test:bool=False):
+def load_tcga(test:bool=False, split:str=None):
     """
     Parameters:
-        test (bool): whether to load the test dataset
+        test (bool): legacy flag, True -> 'test', False -> 'train'
+        split (str): 'train', 'val' or 'test' (overrides `test`)
     Returns:
         TCGA dataframe (csv)
     """
-    # HARDCODED
-    if test:
-        path = f"newdata/data_RNAseq_RTCGA/train_df_covariates.csv"
-    else:
-        path = f"newdata/data_RNAseq_RTCGA/test_df_covariates.csv"
+    # NB: the original code had train/test swapped here (test=True loaded the train file).
+    if split is None:
+        split = "test" if test else "train"
+    assert split in ("train", "val", "test"), split
+    path = os.path.join(TCGA_DIR, f"{split}_df_covariates.csv")
     df_tcga = pd.read_csv(path, sep=',')
     return df_tcga
 
@@ -82,15 +95,28 @@ def clean_data(df, keep_cols = ['cancer']):
 
     return df
 
-def process_tcga_data(test:bool=False, landmark:bool=False):
+def process_tcga_covariates(split:str="train"):
+    """
+    Landmark genes + CFG covariate tensor (cancer type, sex, race, continuous age).
+    Returns:
+        X (tensor n x 978, unscaled), y (tensor n x 4, see covariates.py)
+    """
+    df = load_tcga(split=split)
+    landmarks = pd.read_csv(LANDMARK_FILE, dtype=str)['genes_ids'].tolist()
+    X = torch.from_numpy(df[landmarks].to_numpy(dtype=np.float32))
+    y = encode_covariates(df)
+    return X, y
+
+def process_tcga_data(test:bool=False, landmark:bool=False, split:str=None):
     """
     Parameters:
-        test (bool): whether to process the test set
+        test (bool): whether to process the test set (legacy; use split)
         landmark (bool): whether to keep only landmark genes
+        split (str): 'train', 'val' or 'test'
     Returns:
         tuple of processed genes (tensor), processed numerical covariates (tensor), categorical covariates (tensor)
     """
-    df_tcga = load_tcga(test)
+    df_tcga = load_tcga(test, split=split)
     df_tcga = clean_data(df_tcga, keep_cols = ['age','gender','cancer', 'tissue_type'])
 
     # age, gender, cancer
@@ -104,22 +130,20 @@ def process_tcga_data(test:bool=False, landmark:bool=False):
     numerical_covs = numerical_covs.astype(np.float32)
 
     # One-hot tissue types
-    TISSUES = ['adrenal', 'bladder', 'breast', 'cervical', 'liver', 'colon', 'blood', 'esophagus', 'brain', 'head', 'kidney', 'kidney', 'kidney', 'blood', 'brain', 'liver', 'lung', 'lung', 'lung', 'ovary', 'pancreas', 'kidney', 'prostate','rectum', 'soft-tissues', 'skin', 'stomach', 'stomach', 'testes', 'thyroid', 'thymus', 'uterus', 'uterus', 'eye']
-
     Tissue_Encoder = OneHotEncoder(handle_unknown='ignore') # Init encoder
-    Tissue_Encoder.fit(np.unique(TISSUES).reshape(-1,1))
+    Tissue_Encoder.fit(np.unique(TCGA_TISSUES).reshape(-1,1))
 
     categorical_covs = df_tcga['tissue_type'].to_numpy()
     # reshape to features vector
     categorical_covs = categorical_covs.reshape((-1,1))
     categorical_covs = Tissue_Encoder.transform(X = categorical_covs)
     print(categorical_covs.shape)
-    categorical_covs = categorical_covs.astype(np.int)
+    categorical_covs = categorical_covs.astype(int)
 
     true = df_tcga.drop(columns = ['age','gender','cancer','tissue_type'])
-    
+
     if landmark: # Get only 978 landmark genes
-        df_tcga_union_landmark = pd.read_csv('/home/alacan/scripts/diffusion_models/diffusion/ddim/datasets/tcga_union_978landmark_genes.csv') # Load landmark genes ids
+        df_tcga_union_landmark = pd.read_csv(LANDMARK_FILE) # Load landmark genes ids
         df_tcga_union_landmark['genes_ids'] = df_tcga_union_landmark['genes_ids'].astype('str')
         true = true[df_tcga_union_landmark['genes_ids']] # keep only the genes ids in landmark genes ids
     
@@ -168,7 +192,7 @@ def process_gtex_data(test:bool=False, landmark:bool=False):
     # reshape to features vector
     categorical_covs = categorical_covs.reshape((-1,1))
     categorical_covs = Tissue_Encoder.transform(X = categorical_covs)
-    categorical_covs = categorical_covs.astype(np.int)
+    categorical_covs = categorical_covs.astype(int)
 
     df_gtex = df_gtex.drop(columns = ['age','gender','tissue_type'])
     df_gtex = df_gtex.values
@@ -181,19 +205,26 @@ def process_gtex_data(test:bool=False, landmark:bool=False):
 
     return df_gtex, numerical_covs, categorical_covs
 
-def get_tcga_datasets(scaler_type:str="standard"):
+def get_tcga_datasets(scaler_type:str="standard", conditioning:str="tissue", eval_split:str="val"):
     """
     Global function to obtain preprocessed TCGA dataset.
     ----
     Parameters:
         scaler_type (str): type of data scaling (e.g., minmax, standard, maxabs)
+        conditioning (str): 'tissue' (baseline: one-hot tissue labels) or
+                            'covariates' (CFG: cancer type, sex, race, age; see covariates.py)
+        eval_split (str): which held-out split to return second ('val' or 'test')
     Returns:
-        tuple of train and test sets as pytorch datasets
+        tuple of train and held-out sets as pytorch datasets
     """
-    # Load train data
-    X_train, numerical_covs, y_train = process_tcga_data(test=False, landmark=True)
-    # Load test data
-    X_test, numerical_covs_test, y_test = process_tcga_data(test=True, landmark=True)
+    if conditioning == "tissue":
+        X_train, _, y_train = process_tcga_data(landmark=True, split="train")
+        X_test, _, y_test = process_tcga_data(landmark=True, split=eval_split)
+    elif conditioning == "covariates":
+        X_train, y_train = process_tcga_covariates("train")
+        X_test, y_test = process_tcga_covariates(eval_split)
+    else:
+        raise ValueError(f"Unknown conditioning {conditioning}")
     
     # Scale the data
     if scaler_type == "standard":
