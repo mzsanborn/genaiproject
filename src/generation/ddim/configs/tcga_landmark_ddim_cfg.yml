@@ -66,7 +66,7 @@ sampling:
     batch_size: 2048 
     total_samples: 8200
     compute_metrics: True
-    use_best: True # sample from ckpt_best.pth (lowest validation loss) instead of the last checkpoint
+    use_best: False # True = sample from ckpt_best.pth (lowest val loss). OFF: mid-training checkpoints sample badly (std ~0.6 vs real 0.09) despite lower val loss; only the end-of-schedule checkpoint samples well
 
 optim:
     weight_decay: 0.000

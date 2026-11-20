@@ -657,7 +657,7 @@ class Diffusion(object):
         if not self.args.use_pretrained:
             best_path = os.path.join(self.args.log_path, "ckpt_best.pth")
             if getattr(self.config.sampling, "ckpt_id", None) is None and \
-                    getattr(self.config.sampling, "use_best", True) and os.path.exists(best_path):
+                    getattr(self.config.sampling, "use_best", False) and os.path.exists(best_path):
                 states = torch.load(best_path, map_location=self.device)
                 print(f"Loaded BEST-validation checkpoint ckpt_best.pth (step {states[3]})")
                 logging.info(f"Sampling from best-validation checkpoint (step {states[3]})")
