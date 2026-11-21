@@ -6,6 +6,7 @@
 #   %cd /content/genaiproject
 #   !pip install -q pytorch_warmup
 #   !bash run_colab.sh baseline      # or: cfg
+#   !bash run_colab.sh baseline baseline_standard   # optional 2nd arg = run name (folders)
 #
 # Storage model (the standard pattern for ephemeral GPU machines):
 #   * Training reads/writes ONLY Colab's local disk (EXP_ROOT, default /content/runs).
@@ -28,6 +29,7 @@ set -e
 cd "$(dirname "$0")"
 
 WHICH=${1:-baseline}
+NAME=${2:-$WHICH}   # run name: local folder $EXP_ROOT/$NAME and Drive folder $BACKUP_ROOT/$NAME
 EXP_ROOT=${EXP_ROOT:-/content/runs}
 BACKUP_ROOT=${BACKUP_ROOT:-genaiproject_backups_standard}   # folder under My Drive (runs with per-gene standard scaling; earlier maxabs runs are in genaiproject_backups)
 BACKUP_BACKEND=${BACKUP_BACKEND:-drive}
@@ -37,18 +39,18 @@ TIMESTEPS=${TIMESTEPS:-100}   # DDIM sampling steps (100 used for all reported r
 case "$WHICH" in
   baseline) CONFIG=tcga_landmark_ddim_baseline.yml ;;  # tissue-conditioned replication
   cfg)      CONFIG=tcga_landmark_ddim_cfg.yml ;;       # cancer type + sex + race + age, CFG
-  *) echo "usage: $0 baseline|cfg"; exit 1 ;;
+  *) echo "usage: $0 baseline|cfg [run_name]"; exit 1 ;;
 esac
 
 RESUME_FLAG="--resume_training"   # main_ddim.py falls back to a fresh start if no checkpoint exists
 if [ "${RESUME:-1}" = "0" ]; then
   RESUME_FLAG=""
-  echo "RESUME=0: starting $WHICH from scratch"
+  echo "RESUME=0: starting $NAME ($WHICH) from scratch"
 fi
 
 # --with_best_params y : Lacan et al. tuned hyperparameters (4096x2 layers, quad schedule, lr 1.4e-3)
 # --timesteps         : DDIM sampling steps (TIMESTEPS, default 100)
 python main_ddim.py --config "$CONFIG" --with_best_params y \
-    --exp "$EXP_ROOT/$WHICH" --doc tcga --sample --fid \
+    --exp "$EXP_ROOT/$NAME" --doc tcga --sample --fid \
     --timesteps "$TIMESTEPS" --eta 0 --ni --device "[0]" --device2 "cuda:0" $RESUME_FLAG \
-    --backup "$BACKUP_ROOT/$WHICH" --backup_backend "$BACKUP_BACKEND" --backup_every_min "$BACKUP_EVERY_MIN"
+    --backup "$BACKUP_ROOT/$NAME" --backup_backend "$BACKUP_BACKEND" --backup_every_min "$BACKUP_EVERY_MIN"

@@ -28,6 +28,7 @@ Metrics (real test split unless TRTS):
 Usage on Colab (after a run has finished; see colab/run_ddim.ipynb):
   python reverse_validation.py --run /content/runs/cfg                       # local run folder
   python reverse_validation.py --model cfg --from_backup genaiproject_backups_standard
+  python reverse_validation.py --model baseline --from_backup genaiproject_backups   # first (maxabs) baseline
   add --runs 5 (seeds), --device cuda, --smoke (2 seeds, few epochs: quick check)
 """
 import argparse, json, os, sys, time
@@ -206,7 +207,7 @@ def metrics(pred, T, meta):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run", help="local run folder, e.g. /content/runs/cfg")
-    ap.add_argument("--model", choices=["baseline", "cfg"], help="with --from_backup")
+    ap.add_argument("--model", help="run name in the backup folder (e.g. baseline, baseline_standard, cfg); with --from_backup")
     ap.add_argument("--from_backup", help="Drive folder under My Drive holding <model>/ backups")
     ap.add_argument("--runs", type=int, default=5, help="seeds per setting")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
