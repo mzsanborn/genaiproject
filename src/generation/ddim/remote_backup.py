@@ -75,25 +75,49 @@ class DriveApiBackend:
         elif folder is False:
             q += f" and mimeType != '{self.FOLDER}'"
         res = self.svc.files().list(q=q, spaces="drive", orderBy="modifiedTime desc",
-                                    fields="files(id, name, modifiedTime, size)").execute()
+                                    fields="files(id, name, modifiedTime, createdTime, size)").execute()
         return res.get("files", [])
 
+    def _oldest_folder(self, parent, name):
+        found = sorted(self._children(parent, name, folder=True), key=lambda f: f.get("createdTime", ""))
+        return found[0]["id"] if found else None
+
     def _folder_id(self, rel_dir, create):
+        """
+        Folder id for <root>/<rel_dir>. Drive allows several folders with the same name (two
+        runs launched at the same moment once each created their own copy), so we always use
+        the OLDEST folder of a given name. After creating one we re-check; if another process
+        created one too, we adopt the oldest and delete our own (still empty) duplicate.
+        """
         parts = [p for p in f"{self.root}/{rel_dir}".split("/") if p]
         parent, path = "root", ""
         for p in parts:
             path = f"{path}/{p}"
             if path not in self._folders:
-                found = self._children(parent, p, folder=True)
-                if found:
-                    self._folders[path] = found[0]["id"]
-                elif create:
+                fid = self._oldest_folder(parent, p)
+                if fid is None and create:
                     meta = {"name": p, "mimeType": self.FOLDER, "parents": [parent]}
-                    self._folders[path] = self.svc.files().create(body=meta, fields="id").execute()["id"]
-                else:
+                    mine = self.svc.files().create(body=meta, fields="id").execute()["id"]
+                    fid = self._oldest_folder(parent, p) or mine
+                    if fid != mine:
+                        try:
+                            self.svc.files().delete(fileId=mine).execute()
+                        except Exception:
+                            pass
+                if fid is None:
                     return None
+                self._folders[path] = fid
             parent = self._folders[path]
         return parent
+
+    def _all_folder_ids(self, rel_dir):
+        """Every folder matching <root>/<rel_dir>, following ALL same-named folders at each level."""
+        parents = ["root"]
+        for p in [p for p in f"{self.root}/{rel_dir}".split("/") if p]:
+            parents = [f["id"] for par in parents for f in self._children(par, p, folder=True)]
+            if not parents:
+                return []
+        return parents
 
     def upload(self, local_path, remote_rel):
         from googleapiclient.http import MediaFileUpload
@@ -116,12 +140,11 @@ class DriveApiBackend:
     def download(self, remote_rel, local_path):
         from googleapiclient.http import MediaIoBaseDownload
         rel_dir, name = os.path.split(remote_rel)
-        parent = self._folder_id(rel_dir, create=False)
-        if parent is None:
-            return False
-        found = self._children(parent, name, folder=False)
+        # look in every same-named folder path and take the most recently modified copy
+        found = [f for par in self._all_folder_ids(rel_dir) for f in self._children(par, name, folder=False)]
         if not found:
             return False
+        found.sort(key=lambda f: f.get("modifiedTime", ""), reverse=True)
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
         tmp = local_path + ".downloading"
         with open(tmp, "wb") as fh:
